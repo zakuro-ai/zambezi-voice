@@ -1,0 +1,19 @@
+# La Forge job spec: Whisper fine-tune on Zambezi Voice (Lozi + Tonga).
+# dataset_ref: the private `zambezi-voice` dataset on stg.hub.zakuro-ai.com,
+# whose only CSV is manifest.csv (this repo's forge/manifest.csv). Runs on a
+# zak-forge with ASR support (branch feat/whisper-asr) against a hub whose job
+# grants can read dataset files (branch feat/grant-scoped-dataset-reads).
+model_type: asr
+base_model: openai/whisper-large-v3-turbo
+# Lozi and Tonga are not Whisper languages; Shona is a related Bantu language.
+language: sn
+target: {device_class: gpu-8gb, format: ggml}
+adapter: {type: lora, r: 32, alpha: 64}
+input_features: [{name: audio, type: audio}]
+output_features: [{name: transcript, type: text}]
+trainer:
+  type: finetune
+  epochs: 3
+  learning_rate: 1.0e-4
+  batch_size: 8
+  gradient_accumulation_steps: 2

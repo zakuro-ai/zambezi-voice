@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Package Zambezi Voice for the Zakuro hub and emit a La Forge ASR manifest.
 
-  build     pack each (language, split)'s audio into tar shards, index every clip
+  build     pack each (language, split)'s audio into tar shards and write
+            manifest.csv, the La Forge manifest: one row per clip, audio -> transcript
   push      upload a directory as a (private) dataset version on the hub
-  manifest  write the La Forge manifest: one row per clip, audio -> transcript
   verify    fetch clips back from the hub by byte range and check their sha256
 
 Why shards: a hub dataset version holds at most 256 files (zak-marketplace
@@ -29,8 +29,6 @@ import io
 import json
 import os
 import random
-import re
-import shutil
 import sys
 import tarfile
 import threading
@@ -54,13 +52,11 @@ DEFAULT_TOKEN_FILE = "~/.config/zakuro/stg-hub.token"
 USER_AGENT = "zambezi-voice-hub/1.0"
 UPSTREAM = "https://github.com/zakuro-ai/zambezi-voice"
 
-INDEX_FIELDS = ["language", "split", "audio_id", "transcript", "duration_ms",
-                "sample_rate", "shard", "member", "offset", "size", "sha256"]
-MANIFEST_FIELDS = ["audio", "transcript", "language", "split", "duration_ms",
-                   "sample_rate", "shard", "offset", "size", "sha256", "url"]
-_AUDIO_URI = re.compile(
-    r"^(?P<ref>zc://[^/@]+/[^/@]+@sha256:(?P<digest>[0-9a-f]{64}))/"
-    r"(?P<shard>[^#]+)#(?P<member>.+)$")
+#: The La Forge manifest: the dataset's only CSV. `audio` is relative to the
+#: dataset version (`<shard>#<member>`), so the manifest travels with the
+#: audio it names and never has to know its own version digest.
+MANIFEST_FIELDS = ["audio", "transcript", "split", "language", "duration_ms",
+                   "sample_rate", "offset", "size", "sha256"]
 
 
 class HubError(Exception):
@@ -184,19 +180,19 @@ packaged from [zakuro-ai/zambezi-voice]({UPSTREAM}).
 
 ## Layout
 
-- `<language>/<code>/<split>.tsv`: the original transcripts, unchanged
-  (tab-separated: `audio_id`, `sentence`, `BitsPerSample`, `durationMsec`,
-  `sampleRate`).
+- `manifest.csv`: one row per clip. `audio` names the clip as
+  `<shard>#<member>`, relative to this dataset; `offset`, `size` and `sha256`
+  locate and check its bytes inside the shard; then `transcript`, `split`,
+  `language` (ISO 639-3), `duration_ms`, `sample_rate`. It is the dataset's
+  only CSV, which is what a La Forge `dataset_ref` resolves to.
 - `<language>/<code>/audio/<split>-NNN.tar`: the audio (16 kHz mono 16-bit
-  PCM WAV), packed into uncompressed tar shards because a hub dataset
-  version holds at most 256 files.
+  PCM WAV), in uncompressed tar shards because a hub dataset version holds
+  at most 256 files.
 
-Each clip is a tar member named by its `audio_id`, stored contiguously and
-unmodified, so fetching one clip is a single HTTP Range request:
-`bytes=<offset>-<offset + size - 1>` on its shard returns the original
-`.wav`. The La Forge manifest (`forge/manifest.csv` in the repository, also
-published as the `zambezi-voice-asr` dataset) lists the shard, offset, size,
-sha256 and transcript of every clip.
+A clip's bytes sit contiguously and unmodified in its shard, so one HTTP Range
+request (`bytes=<offset>-<offset + size - 1>`) returns the original `.wav`.
+The original TSVs are in the repository, not here, so the catalogue counts
+each clip once.
 
 ## Not included
 
@@ -234,8 +230,6 @@ def cmd_build(args) -> None:
             tsv = code_dir / f"{split}.tsv"
             if not tsv.exists():
                 continue
-            (out / rel).mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(tsv, out / rel / tsv.name)
             writer = ShardWriter(out, f"{rel}/audio", split, args.shard_bytes)
             with tsv.open(newline="", encoding="utf-8") as f:
                 for rec in csv.DictReader(f, delimiter="\t"):
@@ -273,12 +267,15 @@ def cmd_build(args) -> None:
 
     verify_shards(out, rows)
     write_card(out, stats, skipped, problems)
-    index = Path(args.index)
-    index.parent.mkdir(parents=True, exist_ok=True)
-    with index.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=INDEX_FIELDS, lineterminator="\n")
+    with (out / "manifest.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=MANIFEST_FIELDS, lineterminator="\n")
         w.writeheader()
-        w.writerows(rows)
+        for r in rows:
+            w.writerow({"audio": f"{r['shard']}#{r['member']}",
+                        "transcript": r["transcript"], "split": r["split"],
+                        "language": r["language"], "duration_ms": r["duration_ms"],
+                        "sample_rate": r["sample_rate"], "offset": r["offset"],
+                        "size": r["size"], "sha256": r["sha256"]})
 
     files = sorted(p for p in out.rglob("*") if p.is_file())
     print(f"{len(rows):,} clips -> {len(files)} files, "
@@ -290,7 +287,7 @@ def cmd_build(args) -> None:
     for what, n in sorted(problems.items()):
         if n:
             print(f"note: {n:,} {what}")
-    print(f"index: {index}")
+    print(f"manifest: {out / 'manifest.csv'}")
 
 
 # ----------------------------------------------------------------------- hub
@@ -547,74 +544,45 @@ def cmd_push(args) -> None:
     print(f"result: {args.result}")
 
 
-# ------------------------------------------------------------------ manifest
-
-def cmd_manifest(args) -> None:
-    pushed = json.loads(Path(args.hub_result).read_text())
-    files_base = (f"{pushed['hub']}/api/datasets/{pushed['dataset_id']}"
-                  f"/versions/{pushed['digest']}/files/")
-    published = set(pushed["paths"])
-    n = 0
-    with open(args.index, newline="", encoding="utf-8") as f, \
-            open(args.out, "w", newline="", encoding="utf-8") as g:
-        w = csv.DictWriter(g, fieldnames=MANIFEST_FIELDS, lineterminator="\n")
-        w.writeheader()
-        for r in csv.DictReader(f):
-            if r["shard"] not in published:
-                raise SystemExit(f"{r['shard']} is not in {pushed['ref']}")
-            w.writerow({
-                "audio": f"{pushed['ref']}/{r['shard']}#{r['member']}",
-                "transcript": r["transcript"], "language": r["language"],
-                "split": r["split"], "duration_ms": r["duration_ms"],
-                "sample_rate": r["sample_rate"], "shard": r["shard"],
-                "offset": r["offset"], "size": r["size"], "sha256": r["sha256"],
-                "url": files_base + urllib.parse.quote(r["shard"]),
-            })
-            n += 1
-    print(f"{n:,} rows -> {args.out}")
-
-
 def cmd_verify(args) -> None:
-    hub = Hub(args.hub, load_token(args))
+    pushed = json.loads(Path(args.hub_result).read_text())
+    hub = Hub(pushed["hub"], load_token(args))
+    got = hub.call("GET", "/api/datasets/resolve?ref="
+                   + urllib.parse.quote(pushed["ref"], safe=""))
+    if got["canonical"] != pushed["ref"]:
+        raise SystemExit(f"{pushed['ref']} resolves to {got['canonical']}")
+    print(f"resolves: {pushed['ref']}")
+    files_base = (f"{hub.base}/api/datasets/{pushed['dataset_id']}"
+                  f"/versions/{pushed['digest']}/files/")
     with open(args.manifest, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-    refs = set()
     by_shard = collections.defaultdict(list)
     for r in rows:
-        m = _AUDIO_URI.match(r["audio"])
-        if m is None or m["shard"] != r["shard"]:
-            raise SystemExit(f"malformed audio URI: {r['audio']}")
-        refs.add(m["ref"])
-        by_shard[r["url"]].append(r)
-    for ref in sorted(refs):
-        got = hub.call("GET", "/api/datasets/resolve?ref=" + urllib.parse.quote(ref, safe=""))
-        if got["canonical"] != ref:
-            raise SystemExit(f"{ref} resolves to {got['canonical']}")
-        print(f"resolves: {ref}")
-
+        shard, _, member = r["audio"].partition("#")
+        by_shard[shard].append((member, r))
     rng = random.Random(args.seed)
     checked = 0
-    for url, items in sorted(by_shard.items()):
+    for shard, items in sorted(by_shard.items()):
         picks = range(len(items)) if args.all else sorted(
             {0, len(items) - 1} | set(rng.sample(range(len(items)),
                                                  min(args.per_shard, len(items)))))
-        storage = hub.location(url)
+        storage = hub.location(files_base + urllib.parse.quote(shard))
         for i in picks:
-            r = items[i]
+            member, r = items[i]
             start, size = int(r["offset"]), int(r["size"])
             req = urllib.request.Request(storage, headers={
                 "Range": f"bytes={start}-{start + size - 1}", "User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=120) as resp:
                 status, data = resp.status, resp.read()
-            if status != 206 or len(data) != size:
-                raise SystemExit(f"{r['audio']}: HTTP {status}, {len(data)} bytes")
-            if hashlib.sha256(data).hexdigest() != r["sha256"]:
-                raise SystemExit(f"{r['audio']}: sha256 mismatch")
+            if (status != 206 or len(data) != size
+                    or hashlib.sha256(data).hexdigest() != r["sha256"]):
+                raise SystemExit(f"{shard}#{member}: HTTP {status}, {len(data)} bytes, "
+                                 "short read or sha256 mismatch")
             facts = wav_facts(data)
             if facts is None or facts[1] != int(r["sample_rate"]):
-                raise SystemExit(f"{r['audio']}: not the WAV the manifest describes")
+                raise SystemExit(f"{shard}#{member}: not the WAV the manifest describes")
             checked += 1
-        print(f"  ok {len(picks):4d} clips  {items[0]['shard']}", flush=True)
+        print(f"  ok {len(picks):4d} clips  {shard}", flush=True)
     print(f"verified {checked} clips across {len(by_shard)} shards by byte-range fetch")
 
 
@@ -624,37 +592,31 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("build", help="pack audio into shards and index clips")
+    b = sub.add_parser("build", help="pack audio into shards and write the manifest")
     b.add_argument("--repo", default=".")
     b.add_argument("--out", default="build/hub/zambezi-voice")
-    b.add_argument("--index", default="build/zambezi-voice.index.csv")
     b.add_argument("--shard-bytes", type=int, default=512 * MiB)
     b.set_defaults(fn=cmd_build)
 
-    for name, fn, helptext in (("push", cmd_push, "upload a directory as a dataset"),
-                               ("verify", cmd_verify, "range-fetch clips and check them")):
-        p = sub.add_parser(name, help=helptext)
-        p.add_argument("--hub", default=DEFAULT_HUB)
-        p.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
-        p.set_defaults(fn=fn)
-        if name == "push":
-            p.add_argument("dir")
-            p.add_argument("--name", required=True)
-            p.add_argument("--visibility", choices=("private", "public"), default="private")
-            p.add_argument("--license", default="mit")
-            p.add_argument("--workers", type=int, default=6)
-            p.add_argument("--result", required=True)
-        else:
-            p.add_argument("--manifest", default="forge/manifest.csv")
-            p.add_argument("--per-shard", type=int, default=3)
-            p.add_argument("--all", action="store_true")
-            p.add_argument("--seed", type=int, default=0)
+    p = sub.add_parser("push", help="upload a directory as a dataset")
+    p.add_argument("--hub", default=DEFAULT_HUB)
+    p.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
+    p.add_argument("dir")
+    p.add_argument("--name", required=True)
+    p.add_argument("--visibility", choices=("private", "public"), default="private")
+    p.add_argument("--license", default="mit")
+    p.add_argument("--workers", type=int, default=6)
+    p.add_argument("--result", required=True)
+    p.set_defaults(fn=cmd_push)
 
-    m = sub.add_parser("manifest", help="write the La Forge manifest")
-    m.add_argument("--index", default="build/zambezi-voice.index.csv")
-    m.add_argument("--hub-result", default="build/zambezi-voice.hub.json")
-    m.add_argument("--out", default="forge/manifest.csv")
-    m.set_defaults(fn=cmd_manifest)
+    v = sub.add_parser("verify", help="range-fetch clips from the hub and check them")
+    v.add_argument("--token-file", default=DEFAULT_TOKEN_FILE)
+    v.add_argument("--hub-result", default="build/zambezi-voice.hub.json")
+    v.add_argument("--manifest", default="build/hub/zambezi-voice/manifest.csv")
+    v.add_argument("--per-shard", type=int, default=3)
+    v.add_argument("--all", action="store_true")
+    v.add_argument("--seed", type=int, default=0)
+    v.set_defaults(fn=cmd_verify)
 
     args = ap.parse_args(argv)
     try:
