@@ -501,8 +501,15 @@ def cmd_push(args) -> None:
 
     ready = opened.get("expires_at") is None and not opened["files"]
     if not ready:
+        # Assemble only the multipart files still in flight in THIS upload.
+        # The hub stores blobs by content, so a file whose bytes it already
+        # holds (from an earlier version, or assembled by an earlier run)
+        # reports landed and was never opened as multipart here: there are
+        # no parts to complete and no ETags to have.
+        status = hub.call("GET", f"/api/datasets/uploads/{upload_id}")
+        landed = {f["path"] for f in status["files"] if f["landed"]}
         for f in files:
-            if "parts" not in f:
+            if "parts" not in f or f["path"] in landed:
                 continue
             have = etags.get(f["path"], {})
             if len(have) != len(f["parts"]):
@@ -510,8 +517,6 @@ def cmd_push(args) -> None:
                     f"{f['path']}: have ETags for {len(have)} of {len(f['parts'])} "
                     f"parts; abandon upload {upload_id} "
                     f"(DELETE /api/datasets/uploads/{upload_id}) and push again")
-            # Idempotent on the hub side: a file assembled by an earlier run
-            # answers landed=true without touching storage.
             quoted = urllib.parse.quote(f["path"])
             hub.call("POST", f"/api/datasets/uploads/{upload_id}/files/{quoted}/complete",
                      {"parts": [{"part_number": int(n), "etag": e}
