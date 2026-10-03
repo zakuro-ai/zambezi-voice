@@ -11,6 +11,7 @@ Lozi and Tonga read speech in this repository.
 |---|---|
 | `loz.yaml` | Lozi: train on `train@loz`, validate on `dev@loz` (4.4 h / 0.9 h) |
 | `toi.yaml` | Tonga: train on `train@toi`, validate on `dev@toi` (19.6 h / 1.6 h) |
+| `loz-whisper.yaml` | Lozi again, with a pretrained Whisper-small + LoRA (the accuracy route, see below) |
 | `run.sh` | run a job on a **local** copy of the dataset |
 
 `test` is never read.
@@ -70,7 +71,21 @@ Both on the shared RTX 2080 Ti of x399 (one GPU, ~7 GB, `dispatch: process`, `as
 | export re-scored from `model.safetensors` alone | CER 50.5 % | CER 19.1 % |
 | `data.sha256` (pinned in the spec) | `7195d51f…b92358` | `3b2ef9c9…846f9e` |
 
-Read these as a **working pipeline and baselines, not good models**. Lozi: a from-scratch
+### Pretrained Whisper vs from scratch (Lozi, same data, same dataset pin)
+
+| | DeepSpeech2 from scratch | Whisper-small + LoRA (`loz-whisper.yaml`, language token `sn`) |
+|---|---|---|
+| best validation CER / WER | 50.6 % / 95.4 % | **10.1 % / 56.7 %** |
+| export re-scored from its files alone | CER 50.5 % | CER 10.1 % |
+| wall-clock (shared 2080 Ti) | 10.1 min, 30 epochs | 18.9 min, 3 epochs (batch 8 x accum 2) |
+| size of the export | 49 MB | 967 MB |
+
+Pretraining is worth more than anything else on 4.4 h of audio. Whisper has no Lozi, so the decoder is steered with the
+Shona token (a related Bantu language, as in `../forge/asr-spec.yaml`); words are still often wrong (WER 57 %) while
+characters mostly are right. `model: whisper-large-v3-turbo` is available (needs `gradient_checkpointing: true` on a
+12 GB card; not run here).
+
+Read the DeepSpeech2 numbers above as a **working pipeline and baselines, not good models**. Lozi: a from-scratch
 character-level CTC model on 4.4 h of audio memorises its training set (train loss 0.8 against a
 validation CER of 51 %). Tonga has 4.5x the data and reaches CER 19 %, but WER stays at 79 %. More data, SpecAugment
 (`spec_augment: true`), or a pretrained model (the Whisper path in `../forge/`) are the routes to
@@ -100,4 +115,4 @@ to stop at a target CER instead of a fixed epoch count.
 `../forge/asr-spec.yaml` is the older La Forge job that LoRA-fine-tunes Whisper on the same manifest
 and ships ggml. Both paths read the same `forge/manifest.csv` columns; the Atelier path trains a
 small from-scratch model (sized for a shared 8 GB GPU), the Whisper path adapts a large pretrained
-one. An Atelier `whisper` backend is not implemented yet.
+one. The Atelier `whisper` backend (above) is the same idea inside the engine: replayable spec, hash-pinned data, merged `safetensors` export re-scored from its own files.
