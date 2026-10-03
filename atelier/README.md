@@ -58,6 +58,37 @@ python3 -m sakura.atelier predict runs/loz --file clip.wav     # {"text": "..."}
 Continue training for more epochs by adding to the spec
 `resume_from: {uri: runs/loz/checkpoint}`: `epochs` then means *this many more*.
 
+## Reference run (Lozi)
+
+`atelier/loz.yaml` on the shared RTX 2080 Ti of x399 (one GPU, ~7 GB, `dispatch: process`,
+`async_eval: true`), 30 epochs:
+
+| | |
+|---|---|
+| train / validation | 1,855 clips (4.4 h) / 670 clips (0.9 h) |
+| wall-clock | 9.5 min training, 10.1 min billable (data pinning, export, re-score included) |
+| best validation CER / WER | **50.6 % / 95.4 %** |
+| export re-scored from `model.safetensors` alone | CER 50.5 % (`matches_training: true`) |
+| dataset pin (`data.sha256`) | `7195d51f…b92358`, pinned in `loz.yaml` |
+
+Read this as a **working pipeline and a weak baseline, not a good model**: a from-scratch
+character-level CTC model on 4.4 h of audio memorises its training set (train loss 0.8 against a
+validation CER of 51 %) and never gets words right. More data (Tonga has 19.6 h), SpecAugment
+(`spec_augment: true`), or a pretrained model (the Whisper path in `../forge/`) are the routes to
+accuracy; the point of this job is that the same replayable spec trains, exports, re-scores and
+resumes anywhere the Atelier engine runs.
+
+## Pitfalls this surfaced (all fixed upstream)
+
+* A CSV label file cannot hold a space, so the alphabet silently lost it and every transcript with
+  a space indexed past the output layer: the loss froze with no error. `asr-deepspeech` now takes the
+  alphabet as a list, and the backend checks the class count.
+* The engine's `torch.use_deterministic_algorithms(True)` makes PyTorch run CTC loss on cuDNN, whose
+  backward returns NaN for a whole batch when one utterance is unalignable. The DeepSpeech backend
+  opts out of that flag, and the trainer drops unalignable utterances before the loss.
+* A run with no finite gradient step, or without one completed evaluation, now fails instead of
+  reporting `done`.
+
 ## Tuning
 
 `overrides:` is merged over the preset (`speech_recognition/ctc-fast@1`: 3 x 512 bidirectional GRU,

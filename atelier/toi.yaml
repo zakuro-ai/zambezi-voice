@@ -20,7 +20,6 @@ hp: speech_recognition/ctc-fast@1
 overrides:
   epochs: 15
   batch_size: 16          # <= 7 GB usable on the shared 2080 Ti
-  learning_rate: 0.0005
 seed: 42
 export: [safetensors]
 placement: {strategy: best_price, gpus: 1, min_vram_gb: 8}
