@@ -93,7 +93,7 @@ resumes anywhere the Atelier engine runs.
 
 `overrides:` is merged over the preset (`speech_recognition/ctc-fast@1`: 3 x 512 bidirectional GRU,
 AdamW, mixed precision, `dispatch: process`, `async_eval: true`, resume checkpoint at most every 60 s).
-`backend_config:` is merged last for any trainer key. Set `stop_cer: 0.30` (percent) in `overrides`
+`backend_config:` is merged last for any trainer key. Set `stop_cer: 30` (CER in percent) in `overrides`
 to stop at a target CER instead of a fixed epoch count.
 
 ## Whisper (La Forge)
