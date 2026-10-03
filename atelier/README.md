@@ -58,22 +58,21 @@ python3 -m sakura.atelier predict runs/loz --file clip.wav     # {"text": "..."}
 Continue training for more epochs by adding to the spec
 `resume_from: {uri: runs/loz/checkpoint}`: `epochs` then means *this many more*.
 
-## Reference run (Lozi)
+## Reference runs
 
-`atelier/loz.yaml` on the shared RTX 2080 Ti of x399 (one GPU, ~7 GB, `dispatch: process`,
-`async_eval: true`), 30 epochs:
+Both on the shared RTX 2080 Ti of x399 (one GPU, ~7 GB, `dispatch: process`, `async_eval: true`):
 
-| | |
-|---|---|
-| train / validation | 1,855 clips (4.4 h) / 670 clips (0.9 h) |
-| wall-clock | 9.5 min training, 10.1 min billable (data pinning, export, re-score included) |
-| best validation CER / WER | **50.6 % / 95.4 %** |
-| export re-scored from `model.safetensors` alone | CER 50.5 % (`matches_training: true`) |
-| dataset pin (`data.sha256`) | `7195d51f…b92358`, pinned in `loz.yaml` |
+| | Lozi (`loz.yaml`, 30 epochs) | Tonga (`toi.yaml`, 15 epochs) |
+|---|---|---|
+| train / validation | 1,855 clips (4.4 h) / 670 (0.9 h) | 8,340 clips (19.6 h) / 541 (1.6 h) |
+| wall-clock (billable) | 10.1 min | 30.1 min |
+| best validation CER / WER | **50.6 % / 95.4 %** | **19.1 % / 79.0 %** |
+| export re-scored from `model.safetensors` alone | CER 50.5 % | CER 19.1 % |
+| `data.sha256` (pinned in the spec) | `7195d51f…b92358` | `3b2ef9c9…846f9e` |
 
-Read this as a **working pipeline and a weak baseline, not a good model**: a from-scratch
+Read these as a **working pipeline and baselines, not good models**. Lozi: a from-scratch
 character-level CTC model on 4.4 h of audio memorises its training set (train loss 0.8 against a
-validation CER of 51 %) and never gets words right. More data (Tonga has 19.6 h), SpecAugment
+validation CER of 51 %). Tonga has 4.5x the data and reaches CER 19 %, but WER stays at 79 %. More data, SpecAugment
 (`spec_augment: true`), or a pretrained model (the Whisper path in `../forge/`) are the routes to
 accuracy; the point of this job is that the same replayable spec trains, exports, re-scores and
 resumes anywhere the Atelier engine runs.
