@@ -1,0 +1,26 @@
+# L'Atelier job: DeepSpeech2 from scratch on Zambezi Voice Tonga (train@toi -> dev@toi).
+# Replayable: `python -m sakura.atelier run atelier/toi.yaml --out runs/toi`  (see atelier/README.md).
+# data.uri is the hub dataset; the runner presigns its files and rewrites the uri in the engine's
+# copy only. For a local run, atelier/run.sh does the same rewrite to a directory.
+atelier: 1
+name: zambezi-voice-tonga-deepspeech2
+task: speech_recognition
+data:
+  uri: "zc://dataset/794cca0e-14ce-4a56-ae89-2cc49148b8b5@sha256:38794321cbaa9f1ebdef1ba85654bdedf1c48ad6928b3fa105f2878011ac2230"
+  sha256: ""            # filled in resolved.yaml by the first run; pin it to replay
+  format: asr_manifest
+  split:
+    train: "train@toi"
+    validation: "dev@toi"
+features:
+  inputs: [{name: audio, type: audio}]
+  output: {name: transcript, type: text}
+model: deepspeech2
+hp: speech_recognition/ctc-fast@1
+overrides:
+  epochs: 15
+  batch_size: 16          # <= 7 GB usable on the shared 2080 Ti
+  learning_rate: 0.0005
+seed: 42
+export: [safetensors]
+placement: {strategy: best_price, gpus: 1, min_vram_gb: 8}
